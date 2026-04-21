@@ -60,20 +60,24 @@ Báo cáo 5 Whys phải chỉ ra được lỗi nằm ở đâu: Ingestion pipel
 # 1. Cài đặt dependencies
 pip install -r requirements.txt
 
-# 2. Tạo Golden Dataset (chạy trước khi benchmark)
+# 2. Tạo file .env (chứa OPENAI_API_KEY)
+# OPENAI_API_KEY=your_openai_key
+
+# 3. Tạo Golden Dataset (chạy trước khi benchmark)
 python data/synthetic_gen.py
 
-# 3. Chạy Benchmark & tạo reports
+# 4. Chạy Benchmark & tạo reports
 python main.py
 
-# 4. Kiểm tra định dạng trước khi nộp
+# 5. Kiểm tra định dạng trước khi nộp
 python check_lab.py
 ```
 
 ---
 
 ## ⚠️ Lưu ý quan trọng
-- **Bắt buộc** chạy `python data/synthetic_gen.py` trước để tạo file `data/golden_set.jsonl`. File này không được commit sẵn trong repo.
+- **Bắt buộc** chạy `python data/synthetic_gen.py` trước để tạo file `data/golden_set.jsonl`.
+- Script sinh dữ liệu theo từng batch (mặc định 10 câu/lần) để tránh lỗi vượt giới hạn token khi tạo 50 câu trong một lần gọi.
 - Trước khi nộp bài, hãy chạy `python check_lab.py` để đảm bảo định dạng dữ liệu đã chuẩn. Bất kỳ lỗi định dạng nào dẫn đến việc script chấm điểm tự động không chạy được sẽ bị trừ 5 điểm thủ tục.
 - File `.env` chứa API Key **KHÔNG** được push lên GitHub.
 
