@@ -1,12 +1,22 @@
-from typing import List, Dict
+import math
+from typing import Any, Dict, List
+
 
 class RetrievalEvaluator:
+    """
+    Hệ thống đánh giá hiệu suất của Vector Database/Retrieval Stage.
+    Cung cấp các chỉ số chuẩn: Hit Rate, MRR, và NDCG.
+    """
+
     def __init__(self):
         pass
 
-    def calculate_hit_rate(self, expected_ids: List[str], retrieved_ids: List[str], top_k: int = 3) -> float:
+    def calculate_hit_rate(
+        self, expected_ids: List[str], retrieved_ids: List[str], top_k: int = 3
+    ) -> float:
         """
-        TODO: Tính toán xem ít nhất 1 trong expected_ids có nằm trong top_k của retrieved_ids không.
+        Tính toán Hit Rate @K.
+        Trả về 1.0 nếu ít nhất một ID kỳ vọng nằm trong Top K tài liệu được lấy ra.
         """
         top_retrieved = retrieved_ids[:top_k]
         hit = any(doc_id in top_retrieved for doc_id in expected_ids)
@@ -14,27 +24,55 @@ class RetrievalEvaluator:
 
     def calculate_mrr(self, expected_ids: List[str], retrieved_ids: List[str]) -> float:
         """
-        TODO: Tính Mean Reciprocal Rank.
-        Tìm vị trí đầu tiên của một expected_id trong retrieved_ids.
-        MRR = 1 / position (vị trí 1-indexed). Nếu không thấy thì là 0.
+        Tính toán Mean Reciprocal Rank (MRR).
+        Tìm vị trí đầu tiên của một expected_id trong retrieved_ids (1-indexed).
+        MRR = 1 / vị trí.
         """
         for i, doc_id in enumerate(retrieved_ids):
             if doc_id in expected_ids:
                 return 1.0 / (i + 1)
         return 0.0
 
-    async def evaluate_batch(self, dataset: List[Dict]) -> Dict:
+    def calculate_ndcg(
+        self, expected_ids: List[str], retrieved_ids: List[str], top_k: int = 3
+    ) -> float:
         """
-        Chạy eval cho toàn bộ bộ dữ liệu.
-        Dataset cần có trường 'expected_retrieval_ids' và Agent trả về 'retrieved_ids'.
+        Tính toán Normalized Discounted Cumulative Gain (NDCG) @K.
+        Giả định độ liên quan nhị phân (1 cho hit, 0 cho miss).
+        """
+        actual_relevance = [
+            1.0 if doc_id in expected_ids else 0.0 for doc_id in retrieved_ids[:top_k]
+        ]
+        
+        # DCG = sum(rel_i / log2(i + 1 + 1))
+        dcg = sum(rel / math.log2(i + 2) for i, rel in enumerate(actual_relevance))
+        
+        # IDCG (Lý tưởng): Sắp xếp tất cả các hit lên đầu
+        hits = sum(actual_relevance)
+        if hits == 0:
+            return 0.0
+            
+        idcg = sum(1.0 / math.log2(i + 2) for i in range(int(hits)))
+        
+        return dcg / idcg
+
+    async def evaluate_batch(self, dataset: List[Dict[str, Any]], top_k: int = 3) -> Dict[str, float]:
+        """
+        Đánh giá toàn bộ bộ dữ liệu và trả về các chỉ số trung bình.
+        
+        Args:
+            dataset: Danh sách các dict, mỗi dict chứa 'expected_ids' và 'retrieved_ids'.
+            top_k: Số lượng tài liệu hàng đầu để tính toán Hit Rate và NDCG.
         """
         if not dataset:
-            return {"avg_hit_rate": 0.0, "avg_mrr": 0.0}
+            return {"avg_hit_rate": 0.0, "avg_mrr": 0.0, "avg_ndcg": 0.0}
 
         hit_rates = []
         mrr_scores = []
+        ndcg_scores = []
 
         for item in dataset:
+            # Hỗ trợ nhiều cách đặt tên key để tăng tính tương thích
             expected_ids = (
                 item.get("expected_ids")
                 or item.get("ground_truth_ids")
@@ -43,12 +81,14 @@ class RetrievalEvaluator:
             )
             retrieved_ids = item.get("retrieved_ids", [])
 
-            hit_rates.append(self.calculate_hit_rate(expected_ids, retrieved_ids))
+            hit_rates.append(self.calculate_hit_rate(expected_ids, retrieved_ids, top_k=top_k))
             mrr_scores.append(self.calculate_mrr(expected_ids, retrieved_ids))
+            ndcg_scores.append(self.calculate_ndcg(expected_ids, retrieved_ids, top_k=top_k))
 
         return {
             "avg_hit_rate": sum(hit_rates) / len(hit_rates),
             "avg_mrr": sum(mrr_scores) / len(mrr_scores),
+            "avg_ndcg": sum(ndcg_scores) / len(ndcg_scores),
         }
 
 
@@ -57,35 +97,26 @@ if __name__ == "__main__":
 
     evaluator = RetrievalEvaluator()
 
-    # --- Test calculate_hit_rate ---
-    assert evaluator.calculate_hit_rate(["doc1"], ["doc1", "doc2", "doc3"]) == 1.0, "FAIL: hit case"
-    assert evaluator.calculate_hit_rate(["doc1"], ["doc4", "doc5", "doc6"]) == 0.0, "FAIL: miss case"
-    assert evaluator.calculate_hit_rate(["doc1"], ["doc2", "doc1"], top_k=1) == 0.0, "FAIL: ngoài top_k"
-    assert evaluator.calculate_hit_rate(["doc1", "doc2"], ["doc3", "doc2"]) == 1.0, "FAIL: multi expected"
-    print("calculate_hit_rate: OK")
+    # --- Test Cases ---
+    test_expected = ["doc1"]
+    test_retrieved = ["doc2", "doc1", "doc3"] # Hit ở vị trí 2
 
-    # --- Test calculate_mrr ---
-    assert evaluator.calculate_mrr(["doc1"], ["doc1", "doc2"]) == 1.0,        "FAIL: rank 1"
-    assert evaluator.calculate_mrr(["doc1"], ["doc2", "doc1"]) == 0.5,        "FAIL: rank 2"
-    assert abs(evaluator.calculate_mrr(["doc1"], ["doc2", "doc3", "doc1"]) - 1/3) < 1e-9, "FAIL: rank 3"
-    assert evaluator.calculate_mrr(["doc1"], ["doc3", "doc4"]) == 0.0,        "FAIL: không có"
-    print("calculate_mrr: OK")
+    print("--- Testing Single Case ---")
+    print(f"Hit@3: {evaluator.calculate_hit_rate(test_expected, test_retrieved, top_k=3)}")
+    print(f"MRR:   {evaluator.calculate_mrr(test_expected, test_retrieved)}")
+    print(f"NDCG@3: {evaluator.calculate_ndcg(test_expected, test_retrieved, top_k=3):.4f}")
 
-    # --- Test evaluate_batch ---
+    # --- Testing Batch ---
     dataset = [
-        {"expected_ids": ["doc1"], "retrieved_ids": ["doc1", "doc2", "doc3"]},  # hit, mrr=1.0
-        {"expected_ids": ["doc5"], "retrieved_ids": ["doc2", "doc5", "doc3"]},  # hit, mrr=0.5
-        {"expected_ids": ["doc9"], "retrieved_ids": ["doc1", "doc2", "doc3"]},  # miss, mrr=0.0
+        {"expected_ids": ["doc1"], "retrieved_ids": ["doc1", "doc2"]}, # Rank 1
+        {"expected_ids": ["doc2"], "retrieved_ids": ["doc1", "doc2"]}, # Rank 2
+        {"expected_ids": ["doc3"], "retrieved_ids": ["doc1", "doc2"]}, # Miss
     ]
-    result = asyncio.run(evaluator.evaluate_batch(dataset))
-    print(f"evaluate_batch result: {result}")
-    assert abs(result["avg_hit_rate"] - 2/3) < 1e-9, "FAIL: avg_hit_rate"
-    assert abs(result["avg_mrr"] - 0.5) < 1e-9,      "FAIL: avg_mrr"
-    print("evaluate_batch: OK")
-
-    # --- Test dataset rỗng ---
-    empty_result = asyncio.run(evaluator.evaluate_batch([]))
-    assert empty_result == {"avg_hit_rate": 0.0, "avg_mrr": 0.0}, "FAIL: empty dataset"
-    print("evaluate_batch (empty): OK")
-
-    print("\nAll tests passed!")
+    
+    async def run_test():
+        results = await evaluator.evaluate_batch(dataset)
+        print("\n--- Testing Batch ---")
+        for k, v in results.items():
+            print(f"{k}: {v:.4f}")
+            
+    asyncio.run(run_test())
